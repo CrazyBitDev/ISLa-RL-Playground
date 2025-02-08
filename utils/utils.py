@@ -102,3 +102,9 @@ def plot_results(results):
 
 	# Show plot
 	plt.savefig(f'results/{dict["env"]}/plot.pdf', format='pdf')
+
+
+def env_success(env_name, score):
+	if env_name == "LunarLander":
+		return score > 200
+	return False

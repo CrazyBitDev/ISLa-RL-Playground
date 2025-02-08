@@ -70,8 +70,8 @@ conda activate rl-playground
 ```yaml
 use_wandb: True
 wandb_config:
-  project: "FrameworkRL"
-  entity: "luca0" # set entity with this name for the final submission
+  project: "RL-playground 2"
+  entity: "matteoingusci01" # set entity with this name for the final submission
   tag: "Student_VR111111"
 
 DRL_methods:
