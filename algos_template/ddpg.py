@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 import gymnasium
 import collections
-from utils.utils import TorchModel, init_wandb
+from utils.utils import TorchModel, init_wandb, env_success
 import wandb
 import random
 import copy
@@ -36,18 +36,26 @@ class DDPG():
         self.lr_actor = params['parameters']['lr_actor_optimizer']
         self.lr_critic = params['parameters']['lr_critic_optimizer']
 
-        # create actor and critic
-        self.actor = TorchModel(self.state_dim, self.action_dim, self.hidden_layers_actor, self.nodes_hidden_layers_actor)
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=self.lr_actor)
-        self.critic = TorchModel(self.state_dim + self.action_dim, 1, self.hidden_layers_critic, self.nodes_hidden_layers_critic)
-        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=self.lr_critic)
+        # create actor model, target actor model and actor optimizer
+        self.actor_net = TorchModel(self.state_dim, self.action_dim, self.hidden_layers_actor, self.nodes_hidden_layers_actor)
+        self.target_actor_net = TorchModel(self.state_dim, self.action_dim, self.hidden_layers_actor, self.nodes_hidden_layers_actor)
+        self.actor_net_optimizer = torch.optim.Adam(self.actor_net.parameters(), lr=self.lr_actor)
+
+        self.update_parameters(self.actor_net, self.target_actor_net, 1.0)
+
+        # create critic model, target critic model and critic optimizer
+        self.critic_net = TorchModel(self.state_dim + self.action_dim, 1, self.hidden_layers_critic, self.nodes_hidden_layers_critic)
+        self.target_critic_net = TorchModel(self.state_dim + self.action_dim, 1, self.hidden_layers_critic, self.nodes_hidden_layers_critic)
+        self.critic_net_optimizer = torch.optim.Adam(self.critic_net.parameters(), lr=self.lr_critic)
+
+        self.update_parameters(self.critic_net, self.target_critic_net, 1.0)
 
         # create actor and critic target
-        self.actor_target = copy.deepcopy(self.actor)
-        self.critic_target = copy.deepcopy(self.critic)
             
         self.gamma =  params['parameters']['gamma']
         self.tau =  params['parameters']['tau'] 
+
+        self.noise_std = params['parameters']['noise_std']
 
         self.epsilon = 1.0
         self.epsilon_decay = params['parameters']['eps_decay']
@@ -58,10 +66,29 @@ class DDPG():
         
         self.use_wandb = use_wandb
 	
+    
+    def select_action(self, state):
+        """
+        Select an action from the actor model
+        It uses the actor model to generate a probability distribution over the actions and samples from it
+
+        Args:
+            state (torch.Tensor | np.array): the current state
+
+        Returns:
+            actions (torch.Tensor): the selected action
+            log_probabilities (torch.Tensor): the log probabilities of the selected actio
+                (see SAC paper, chapter 4.2, Equation 11)
+        """
+        state = torch.Tensor(state)
+        actions = self.actor_net(state)
+        noise = (self.noise_std ** 0.5) * torch.randn_like(self.action_dim)
+        return actions + noise
+        
 
     def training_loop(self, seed: int, args_wandb=None) -> Union[list, None]:
         """
-        The training loop for the DDPG algorithm
+        The training loop for the SAC algorithm
         It will execute the episodes in the environment and call the update_policy method to update the policy
 
         Args:
@@ -79,69 +106,63 @@ class DDPG():
         if self.use_wandb: init_wandb(args_wandb)
 
         rewards_list, success_list, reward_queue, success_queue = [], [], collections.deque(maxlen=100), collections.deque(maxlen=100)
-        memory_buffer = []
+        memory_buffer = collections.deque(maxlen=self.memory_size)
         for ep in range(self.total_episodes):
-
-            # Reset the environment and the episode reward before the episode
-            if self.env_name == "TB3":
-                # we cannot seed the environment if we are using Unity
-                state = self.env.reset()
-            else:
-                state = self.env.reset(seed=seed)[0]
+            # reset the environment and the episode reward before the episode
             ep_reward = 0
-            memory_buffer.append([])
+            state = self.env.reset()[0]
+            state = torch.as_tensor(state, dtype=torch.float32)
+            success = False
 
-            # Loop through the episode
+            # loop through the episode
             while True:
-                # Select the action to perform
-                if np.random.rand() < self.epsilon:
-                    # Random action, sample from the action space
-                    action = self.env.action_space.sample()
-                else:
-                    # Use the actor to select the action
-                    action = self.actor(torch.tensor(state, dtype=torch.float32)).detach().numpy()
-                    # Add Gaussian noise to actions for exploration
-                    action = np.clip(action + np.random.normal(0, 0.1), self.min_action, self.max_action)
+                # select the action to perform
+                with torch.no_grad():
+                    action = self.select_action(
+                        state
+                    )
+                    action = action.detach().cpu().numpy()
+                action = self.env.action_space.low + (action + 1.0) * 0.5 * (self.env.action_space.high - self.env.action_space.low)
+                action = np.clip(action, self.env.action_space.low, self.env.action_space.high)
 
-                # Perform the action, store the data in the memory buffer and update the reward
-                next_state, reward, terminated, truncated, info = self.env.step(action)
-                # Exit condition for the episode
-                # reward -= 0.01  # Penalize the agent for taking time
+                # Perform the action in the environment
+                next_state, reward, terminated, truncated, _ = self.env.step(action)
                 done = terminated or truncated
 
-                # Store the experience in the memory buffer
-                memory_buffer[-1].append([state, action, reward, next_state, done])
+                # Store the data in the memory buffer
+                memory_buffer.append((
+                    state,
+                    action,
+                    reward,
+                    next_state,
+                    done
+                ))
+
+                # update the episode reward
                 ep_reward += reward
-                
-                if self.env_name == "TB3":
-                    success = info['tg_reach']
-                else:
-                    success = ep_reward > 200
+                # Update the state to the next state
+                state = next_state
+                # Check if the environment is successful
+                success = env_success(self.env_name, ep_reward)
+
+                self.update_policy(memory_buffer)
 
                 # Exit condition for the episode
                 if done: break
-                # Update the state for the next iteration
-                state = next_state
-
+            
             # Update the reward list to return
             reward_queue.append(ep_reward)
-            success_queue.append(int(success))
+            success_queue.append(success) 
             rewards_list.append(np.mean(reward_queue))
             success_list.append(np.mean(success_queue))
-            print( f"episode {ep:4d}:  reward: {ep_reward:3.2f} (mean reward: {rewards_list[-1]:5.2f}) success: {success:3d} (mean success: {success_list[-1]:5.2f})" )
-            if self.use_wandb:
-                wandb.log({'mean_reward': rewards_list[-1], 'mean_success': success_list[-1]})
+            print( f"episode {ep:4d}:  reward: {int(ep_reward):3d} (mean reward: {np.mean(reward_queue):5.2f}) success: {success:3d} (mean success: {success_list[-1]:5.2f})" )
+            if self.use_wandb: wandb.log({'ep_reward': ep_reward, 'mean_reward': rewards_list[-1], 'mean_success': success_list[-1]})
       
-            # Update
-            if ep % self.update_freq == 0:
-                for _ in range(self.n_updates):
-                    self.update_policy(memory_buffer)
-                memory_buffer = []
-
         # Close the enviornment and return the rewards list
         self.env.close()
         wandb.finish()
         return rewards_list if not self.use_wandb else None
+
 
 
     def update_policy(self, memory_buffer: list) -> None:
@@ -167,50 +188,38 @@ class DDPG():
         next_states = torch.tensor(next_states, dtype=torch.float32)
         dones = torch.tensor(dones, dtype=torch.float32).unsqueeze(1)
 
-        # Compute the target Q
-        # target_Q has no gradient
-        with torch.no_grad():
-            next_actions = self.actor_target(next_states)
-            target_Q = rewards + self.gamma * (1 - dones) * self.critic_target(
-                torch.cat([next_states, next_actions], dim=1)
-            )
+        # Update the critic model
+        new_actions = self.target_actor_net(next_states).detach()
+        target_critics = self.target_critic_net(torch.cat([next_states, new_actions], dim=1)).detach()
 
-        # Compute the critic Q and the target critic loss
-        critic_q = self.critic(
-            torch.cat([states, actions], axis=1)
-        )
-        critic_loss = F.mse_loss(critic_q, target_Q).mean()
-        
-        # Optimize the critic
-        self.critic_optimizer.zero_grad()
+        target = rewards + self.gamma * (1 - dones) * target_critics
+        state_values = self.critic_net(torch.cat([states, actions], dim=1))
+        critic_loss = F.mse_loss(state_values, target)
+
+        self.critic_net_optimizer.zero_grad()
         critic_loss.backward()
-        self.critic_optimizer.step()
+        self.critic_net_optimizer.step()
 
-        # Freeze critic networks to optimize computational effort
-        for params in self.critic.parameters():
-            params.requires_grad = False
+        # Update the actor model
+        predicted_actions = self.actor_net(states)
+        critic_value = self.critic_net(torch.cat([states, predicted_actions], dim=1))
+        actor_loss = -torch.mean(critic_value)
 
-        # Compute the actor loss
-        self.actor_optimizer.zero_grad()
-        policy_actions = self.actor(states)
-        policy_loss = self.critic(
-            torch.cat([states, policy_actions], axis=1)
-        )
-        policy_loss = policy_loss.mean()
-        policy_loss.backward()
-        self.actor_optimizer.step()
+        self.actor_net_optimizer.zero_grad()
+        actor_loss.backward()
+        self.actor_net_optimizer.step()
 
-        # Unfreeze critic networks
-        for params in self.critic.parameters():
-            params.requires_grad = True
+        # Update the target networks
+        self.update_parameters(self.actor_net, self.target_actor_net, self.tau)
+        self.update_parameters(self.critic_net, self.target_critic_net, self.tau)
 
-        # Softly update the target networks
-        for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
-            target_param.data.copy_(
-                self.tau * target_param.data + (1.0 - self.tau) * param.data
-            )
-
-        for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
-            target_param.data.copy_(
-                self.tau * target_param.data + (1.0 - self.tau) * param.data
-            )
+            
+    def update_parameters(self, source, target, tau) -> None:
+        """
+        Apply the soft update to the target value function
+        """
+        with torch.no_grad():
+            for param, target_param in zip(source.parameters(), target.parameters()):
+                target_param.data.copy_(
+                    target_param.data * (1.0 - tau) + param.data * tau
+                )
