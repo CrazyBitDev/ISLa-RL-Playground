@@ -37,62 +37,59 @@ class SAC:
         # DNN configurations
         self.hidden_layers_actor = params['parameters']['hidden_layers_actor']     
         self.hidden_layers_critic = params['parameters']['hidden_layers_critic']
+        self.hidden_layers_value = params['parameters']['hidden_layers_value']
         self.nodes_hidden_layers_actor = params['parameters']['nodes_hidden_layers_actor']
         self.nodes_hidden_layers_critic = params['parameters']['nodes_hidden_layers_critic']
+        self.nodes_hidden_layers_value = params['parameters']['nodes_hidden_layers_value']
         self.lr_actor = params['parameters']['lr_actor_optimizer']
         self.lr_critic = params['parameters']['lr_critic_optimizer']
-
-        self.lr_log_entropy_coef = params['parameters']['lr_log_entropy_coef']
+        self.lr_value = params['parameters']['lr_value_optimizer']
 
         # create actor model
         # the actor model will output the mean and the standard deviation of the action distribution
         # so the output size will be the double of the action size
-        self.actor = TorchModel(self.state_dim, self.action_dim * 2, self.hidden_layers_actor, self.nodes_hidden_layers_actor)
-        self.actor_target = TorchModel(self.state_dim, self.action_dim * 2, self.hidden_layers_actor, self.nodes_hidden_layers_actor)
-        self.actor_target.load_state_dict(self.actor.state_dict())
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=self.lr_actor)
+        self.actor_net = TorchModel(self.state_dim, self.action_dim * 2, self.hidden_layers_actor, self.nodes_hidden_layers_actor)
+        self.actor_net_optimizer = torch.optim.Adam(self.actor_net.parameters(), lr=self.lr_actor)
 
         # create critic models (two critics)
         # the critic models will output the Q value for the state-action pair
         # so the input size will be the state size + the action size
         # The use of two Q-functions to mitigate positive bias in the policy improvement step
         # that is known to degrade performance of value based methods
-        self.critic1 = TorchModel(self.state_dim + self.action_dim, 1, self.hidden_layers_critic, self.nodes_hidden_layers_critic)
-        self.critic1_target = TorchModel(self.state_dim + self.action_dim, 1, self.hidden_layers_critic, self.nodes_hidden_layers_critic)
-        self.critic1_target.load_state_dict(self.critic1.state_dict())
-        self.critic2 = TorchModel(self.state_dim + self.action_dim, 1, self.hidden_layers_critic, self.nodes_hidden_layers_critic)
-        self.critic2_target = TorchModel(self.state_dim + self.action_dim, 1, self.hidden_layers_critic, self.nodes_hidden_layers_critic)
-        self.critic2_target.load_state_dict(self.critic2.state_dict())
-        self.critic1_optimizer = torch.optim.Adam(self.critic1.parameters(), lr=self.lr_critic)
-        self.critic2_optimizer = torch.optim.Adam(self.critic2.parameters(), lr=self.lr_critic)
+        self.q1_net = TorchModel(self.state_dim + self.action_dim, 1, self.hidden_layers_critic, self.nodes_hidden_layers_critic)
+        self.q2_net = TorchModel(self.state_dim + self.action_dim, 1, self.hidden_layers_critic, self.nodes_hidden_layers_critic)
+        self.q1_net_optimizer = torch.optim.Adam(self.q1_net.parameters(), lr=self.lr_critic)
+        self.q2_net_optimizer = torch.optim.Adam(self.q1_net.parameters(), lr=self.lr_critic)
 
-        self.log_entropy_coef = torch.zeros(1, requires_grad=True)
-        self.log_entropy_coef_optimizer = torch.optim.Adam([self.log_entropy_coef], lr=self.lr_log_entropy_coef)
+        # create value function models
+        self.value_net = TorchModel(self.state_dim, 1, self.hidden_layers_value, self.nodes_hidden_layers_value)
+        self.target_value_net = TorchModel(self.state_dim, 1, self.hidden_layers_value, self.nodes_hidden_layers_value)
+        self.value_net_optimizer = torch.optim.Adam(self.value_net.parameters(), lr=self.lr_value)
+        
+        self.update_parameters(self.value_net, self.target_value_net, 1.0)
 
         self.action_scale = torch.tensor((self.env.action_space.high - self.env.action_space.low) / 2.0, dtype=torch.float32)
         self.action_bias = torch.tensor((self.env.action_space.high + self.env.action_space.low) / 2.0, dtype=torch.float32)
         
         self.gamma =  params['parameters']['gamma']
         self.tau = params['parameters']['tau']
+        self.epsilon = params['parameters']['epsilon']
         
         self.total_episodes = params['tot_episodes']
         self.batch_size = params['batch_size']
         self.memory_size = params['memory_size']
 
-        self.target_entropy = params['target_entropy']
-
         self.use_wandb = use_wandb
 
 
 
-    def select_action(self, state, target=False) -> Tuple[torch.Tensor, torch.Tensor]:
+    def select_action(self, state) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Select an action from the actor model
         It uses the actor model to generate a probability distribution over the actions and samples from it
 
         Args:
             state (torch.Tensor | np.array): the current state
-            isReparamEnabled (bool): if True, the reparameterization trick will be used to sample the action
 
         Returns:
             actions (torch.Tensor): the selected action
@@ -100,23 +97,22 @@ class SAC:
                 (see SAC paper, chapter 4.2, Equation 11)
         """
         
+        state = torch.FloatTensor(state)
         # get the action distribution from the actor model
-        if target:
-            actor_result = self.actor_target(state)
-        else:
-            actor_result = self.actor(state)
+        actor_result = self.actor_net(state)
         # split the result into the mean and the standard deviation
-        mu, std = torch.chunk(actor_result, 2, dim=-1)
-        std = F.softplus(std)
-        dist = torch.distributions.Normal(mu, std)
+        mu, log_std = torch.chunk(actor_result, 2, dim=-1)
+        std = log_std.exp()
 
-        action = dist.rsample()
-        log_prob = dist.log_prob(action)
-        
-        adjusted_action = torch.tanh(action) * self.action_scale + self.action_bias
-        adjusted_log_prob = log_prob - torch.log(self.action_scale * (1-torch.tanh(action).pow(2)) + 1e-6)
+        # adding noise
+        normal = torch.distributions.Normal(0, 1)
+        z = normal.sample()
+        mean_std_z = mu + std*z
 
-        return adjusted_action, adjusted_log_prob
+        action = torch.tanh(mean_std_z)
+        log_prob = torch.distributions.Normal(mu, std).log_prob(mean_std_z) - torch.log(1 - action.pow(2) + self.epsilon)
+
+        return action, log_prob
 
     def training_loop(self, seed: int, args_wandb=None) -> Union[list, None]:
         """
@@ -153,31 +149,34 @@ class SAC:
                     action, _ = self.select_action(
                         state
                     )
-                    action = action.detach().cpu().numpy().clip(self.env.action_space.low, self.env.action_space.high)
+                    action = action.detach().cpu().numpy()
+                action = self.env.action_space.low + (action + 1.0) * 0.5 * (self.env.action_space.high - self.env.action_space.low)
+                action = np.clip(action, self.env.action_space.low, self.env.action_space.high)
 
                 # Perform the action in the environment
                 next_state, reward, terminated, truncated, _ = self.env.step(action)
-                next_state = torch.as_tensor(next_state, dtype=torch.float32)
-                # update the episode reward
-                ep_reward += reward
-                success = env_success(self.env_name, ep_reward)
+                done = terminated or truncated
 
                 # Store the data in the memory buffer
-                memory_buffer.append([
+                memory_buffer.append((
                     state,
-                    torch.as_tensor(action),
-                    torch.as_tensor(reward, dtype=torch.float32),
+                    action,
+                    reward,
                     next_state,
-                    torch.as_tensor(terminated, dtype=torch.float32)
-                ])
+                    done
+                ))
+
+                # update the episode reward
+                ep_reward += reward
+                # Update the state to the next state
+                state = next_state
+                # Check if the environment is successful
+                success = env_success(self.env_name, ep_reward)
 
                 self.update_policy(memory_buffer)
 
-                done = terminated or truncated
                 # Exit condition for the episode
                 if done: break
-                # Update the state to the next state
-                state = next_state
             
             # Update the reward list to return
             reward_queue.append(ep_reward)
@@ -185,7 +184,7 @@ class SAC:
             rewards_list.append(np.mean(reward_queue))
             success_list.append(np.mean(success_queue))
             print( f"episode {ep:4d}:  reward: {int(ep_reward):3d} (mean reward: {np.mean(reward_queue):5.2f}) success: {success:3d} (mean success: {success_list[-1]:5.2f})" )
-            if self.use_wandb: wandb.log({'mean_reward': rewards_list[-1], 'mean_success': success_list[-1]})
+            if self.use_wandb: wandb.log({'ep_reward': ep_reward, 'mean_reward': rewards_list[-1], 'mean_success': success_list[-1]})
       
         # Close the enviornment and return the rewards list
         self.env.close()
@@ -202,81 +201,73 @@ class SAC:
             memory_buffer (list): the memory buffer containing the data to update the policy
         """
 
-        ## Sample a batch from the memory buffer
-        #batch = random.sample(memory_buffer, self.batch_size)
+        if len(memory_buffer) < self.batch_size:
+            return
 
-        ## Flatten the memory buffer
-        #states, actions, rewards, next_states, dones = [], [], [], [], []
-        #for state, action, reward, next_state, done in batch:
-        #    states.append(state)
-        #    actions.append(action)
-        #    rewards.append(reward)
-        #    next_states.append(next_state)
-        #    dones.append(done)
+            
+        batch = random.sample(memory_buffer, self.batch_size)
+        states, actions, rewards, next_states, dones = map(np.stack, zip(*batch))
 
-        states, actions, rewards, next_states, dones = [torch.stack(b) for b in zip(*random.choices(memory_buffer, k=self.batch_size))]
+        states      = torch.FloatTensor(states)
+        actions     = torch.FloatTensor(actions)
+        next_states = torch.FloatTensor(next_states)
+        rewards     = torch.FloatTensor(rewards).unsqueeze(1)
+        dones       = torch.FloatTensor(np.float32(dones)).unsqueeze(1)
 
-        ## Convert the lists to tensors
-        #states = torch.tensor(np.array(states), dtype=torch.float32)
-        #actions = torch.tensor(np.array(actions))
-        #rewards = torch.tensor(rewards, dtype=torch.float32)
-        #next_states = torch.tensor(np.array(next_states), dtype=torch.float32)
-        #dones = torch.tensor(dones, dtype=torch.int).unsqueeze(1)
-
-        # Calculate the targets
-        with torch.no_grad():
-            next_action, next_action_log_prob = self.select_action(next_states, target=True)
-            next_critic1_target = self.critic1_target(torch.cat([next_states, next_action], dim=-1))
-            next_critic2_target = self.critic2_target(torch.cat([next_states, next_action], dim=-1))
-            min_next_critic_target = torch.min(next_critic1_target, next_critic2_target)
-
-            dones = dones.view(-1, 1)
-            target = rewards.unsqueeze(1) + self.gamma * (1 - dones) * min_next_critic_target - self.log_entropy_coef.exp() * next_action_log_prob
+        states_actions = torch.cat([states, actions], dim=-1)
+        predicted_q1_value = self.q1_net(states_actions)
+        predicted_q2_value = self.q2_net(states_actions)
+        predicted_value = self.value_net(states)
+        new_actions, log_prob = self.select_action(states)
 
         # Update the critic models
-        critic1_value = self.critic1(torch.cat([states, actions], dim=-1))
-        critic1_loss = F.mse_loss(critic1_value, target)
-        self.critic1_optimizer.zero_grad() 
-        critic1_loss.backward()
-        self.critic1_optimizer.step()
+        # (Equation 8)
+        target_value = self.target_value_net(next_states)
+        target_q_value = rewards + self.gamma * (1 - dones) * target_value   
+    
+        # (Equation 7)
+        q1_loss = F.mse_loss(predicted_q1_value, target_q_value.detach())
+        q2_loss = F.mse_loss(predicted_q2_value, target_q_value.detach())
+        
+        self.q1_net_optimizer.zero_grad() 
+        q1_loss.backward()
+        self.q1_net_optimizer.step()
 
-        critic2_value = self.critic2(torch.cat([states, actions], dim=-1))
-        critic2_loss = F.mse_loss(critic2_value, target)
-        self.critic2_optimizer.zero_grad()
-        critic2_loss.backward()
-        self.critic2_optimizer.step()
+        self.q2_net_optimizer.zero_grad()
+        q2_loss.backward()
+        self.q2_net_optimizer.step()
+
+        # Update the value function model
+        states_new_actions = torch.cat([states, new_actions], dim=-1)
+        predicted_new_q1_value = self.q1_net(states_new_actions)
+        predicted_new_q2_value = self.q2_net(states_new_actions)
+        predicted_new_q_value = torch.min(predicted_new_q1_value, predicted_new_q2_value)
+
+        # (Equation 5)
+        target_value_function = predicted_new_q_value - log_prob
+        value_function_loss = F.mse_loss(predicted_value, target_value_function.detach())
+
+        self.value_net_optimizer.zero_grad()
+        value_function_loss.backward()
+        self.value_net_optimizer.step()
 
         # Update the actor model
-        action, action_log_prob = self.select_action(states)
-        entropy = -self.log_entropy_coef.exp() * action_log_prob
-        critic1_value = self.critic1(torch.cat([states, action], dim=-1))
-        critic2_value = self.critic2(torch.cat([states, action], dim=-1))
-        cat_critic_values = torch.cat([critic1_value, critic2_value], dim=-1)
-        min_critic_values = torch.min(cat_critic_values, 1, keepdim=True)[0]
-        actor_loss = (-min_critic_values - entropy).mean()
-        self.actor_optimizer.zero_grad()
+        # (Equation 12)
+        actor_loss = (log_prob - predicted_new_q_value).mean()
+
+        self.actor_net_optimizer.zero_grad()
         actor_loss.backward()
-        self.actor_optimizer.step()
-
-        # Update the log entropy coefficient
-        _, action_log_prob = self.select_action(states)
-        entropy_coef_loss = -(self.log_entropy_coef.exp() * (action_log_prob + self.target_entropy).detach()).mean()
-        self.log_entropy_coef_optimizer.zero_grad()
-        entropy_coef_loss.backward()
-        self.log_entropy_coef_optimizer.step()
-
+        self.actor_net_optimizer.step()
 
         # Update the target value function
-        self.update_parameters(self.critic1, self.critic1_target)
-        self.update_parameters(self.critic2, self.critic2_target)
-        self.update_parameters(self.actor, self.actor_target)
+        self.update_parameters(self.value_net, self.target_value_net, self.tau)
 
-    def update_parameters(self, source, target) -> None:
+    def update_parameters(self, source, target, tau) -> None:
         """
         Apply the soft update to the target value function
         """
         with torch.no_grad():
             for param, target_param in zip(source.parameters(), target.parameters()):
-                target_param.data.mul_(1-self.tau)
-                torch.add(target_param.data, param.data, alpha=self.tau, out=target_param.data)
-
+                target_param.data.copy_(
+                    target_param.data * (1.0 - tau) + param.data * tau
+                )
