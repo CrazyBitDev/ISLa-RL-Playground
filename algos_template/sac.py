@@ -79,6 +79,9 @@ class SAC:
         self.batch_size = params['batch_size']
         self.memory_size = params['memory_size']
 
+        self.exploration_decay = params['parameters']['exploration_decay']
+        self.min_exploration = params['parameters']['min_exploration']
+
         self.use_wandb = use_wandb
 
 
@@ -135,6 +138,9 @@ class SAC:
 
         rewards_list, success_list, reward_queue, success_queue = [], [], collections.deque(maxlen=100), collections.deque(maxlen=100)
         memory_buffer = collections.deque(maxlen=self.memory_size)
+
+        exploration_rate = 1.0
+
         for ep in range(self.total_episodes):
             # reset the environment and the episode reward before the episode
             ep_reward = 0
@@ -145,13 +151,18 @@ class SAC:
             # loop through the episode
             while True:
                 # select the action to perform
-                with torch.no_grad():
-                    action, _ = self.select_action(
-                        state
-                    )
-                    action = action.detach().cpu().numpy()
-                action = self.env.action_space.low + (action + 1.0) * 0.5 * (self.env.action_space.high - self.env.action_space.low)
-                action = np.clip(action, self.env.action_space.low, self.env.action_space.high)
+                if random.random() < exploration_rate:
+                    action = self.env.action_space.sample()
+                else:
+                    with torch.no_grad():
+                        action, _ = self.select_action(
+                            state
+                        )
+                        action = action.detach().cpu().numpy()
+                        action = self.env.action_space.low + (action + 1.0) * 0.5 * (self.env.action_space.high - self.env.action_space.low)
+                        action = np.clip(action, self.env.action_space.low, self.env.action_space.high)
+
+                exploration_rate = max(self.min_exploration, exploration_rate * self.exploration_decay)
 
                 # Perform the action in the environment
                 next_state, reward, terminated, truncated, _ = self.env.step(action)
@@ -173,7 +184,8 @@ class SAC:
                 # Check if the environment is successful
                 success = env_success(self.env_name, ep_reward)
 
-                self.update_policy(memory_buffer)
+                for i in range(2):
+                    self.update_policy(memory_buffer)
 
                 # Exit condition for the episode
                 if done: break
