@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+from torch import nn
 import torch.nn.functional as F
 import gymnasium
 import collections
@@ -41,12 +42,33 @@ class DDPG():
         self.target_actor_net = TorchModel(self.state_dim, self.action_dim, self.hidden_layers_actor, self.nodes_hidden_layers_actor)
         self.actor_net_optimizer = torch.optim.Adam(self.actor_net.parameters(), lr=self.lr_actor)
 
+        # init the actor weights
+        # According to the chapter 7 of the DDPG paper
+        for layer, name in enumerate(self.actor_net._modules):
+            if "fc" in name:
+                dist = 1. / np.sqrt(self.actor_net._modules[name].weight.data.size()[0])
+                nn.init.uniform_(self.actor_net._modules[name].weight.data, -dist, dist)
+                nn.init.uniform_(self.actor_net._modules[name].bias.data, -dist, dist)
+        nn.init.uniform_(self.actor_net.output.weight.data, -3e-3, 3e-3)
+        nn.init.uniform_(self.actor_net.output.bias.data, -3e-3, 3e-3)
+
         self.update_parameters(self.actor_net, self.target_actor_net, 1.0)
 
         # create critic model, target critic model and critic optimizer
         self.critic_net = TorchModel(self.state_dim + self.action_dim, 1, self.hidden_layers_critic, self.nodes_hidden_layers_critic)
         self.target_critic_net = TorchModel(self.state_dim + self.action_dim, 1, self.hidden_layers_critic, self.nodes_hidden_layers_critic)
-        self.critic_net_optimizer = torch.optim.Adam(self.critic_net.parameters(), lr=self.lr_critic)
+        self.critic_net_optimizer = torch.optim.Adam(self.critic_net.parameters(), lr=self.lr_critic, weight_decay=1e-2)
+        
+        # init the critic weights
+        # According to the chapter 7 of the DDPG paper
+        for layer, name in enumerate(self.critic_net._modules):
+            if "fc" in name:
+                dist = 1. / np.sqrt(self.critic_net._modules[name].weight.data.size()[0])
+                nn.init.uniform_(self.critic_net._modules[name].weight.data, -dist, dist)
+                nn.init.uniform_(self.critic_net._modules[name].bias.data, -dist, dist)
+        nn.init.uniform_(self.critic_net.output.weight.data, -3e-4, 3e-4)
+        nn.init.uniform_(self.critic_net.output.bias.data, -3e-4, 3e-4)
+
 
         self.update_parameters(self.critic_net, self.target_critic_net, 1.0)
 
@@ -57,16 +79,24 @@ class DDPG():
 
         self.noise_std = params['parameters']['noise_std']
 
-        self.epsilon = 1.0
         self.epsilon_decay = params['parameters']['eps_decay']
+        self.min_exploration = params['parameters']['min_exploration']
 
-        self.update_freq = params['parameters']['update_freq'] 
-        self.n_updates = params['parameters']['n_updates'] 
         self.total_episodes = params['tot_episodes']
+        self.memory_size = params['memory_size']
+        self.batch_size = params['batch_size']
         
         self.use_wandb = use_wandb
+
+    def get_tanh_action(self, state, target=False):
+        if target:
+            actions = self.target_actor_net(state)
+        else:
+            actions = self.actor_net(state)
+        tanh_actions = F.tanh(actions)
+        return tanh_actions
+
 	
-    
     def select_action(self, state):
         """
         Select an action from the actor model
@@ -81,8 +111,8 @@ class DDPG():
                 (see SAC paper, chapter 4.2, Equation 11)
         """
         state = torch.Tensor(state)
-        actions = self.actor_net(state)
-        noise = (self.noise_std ** 0.5) * torch.randn_like(self.action_dim)
+        actions = self.get_tanh_action(state)
+        noise = (self.noise_std ** 0.5) * torch.randn(self.action_dim)
         return actions + noise
         
 
@@ -107,6 +137,9 @@ class DDPG():
 
         rewards_list, success_list, reward_queue, success_queue = [], [], collections.deque(maxlen=100), collections.deque(maxlen=100)
         memory_buffer = collections.deque(maxlen=self.memory_size)
+
+        exploration_rate = 1.0
+
         for ep in range(self.total_episodes):
             # reset the environment and the episode reward before the episode
             ep_reward = 0
@@ -117,13 +150,20 @@ class DDPG():
             # loop through the episode
             while True:
                 # select the action to perform
-                with torch.no_grad():
-                    action = self.select_action(
-                        state
-                    )
-                    action = action.detach().cpu().numpy()
-                action = self.env.action_space.low + (action + 1.0) * 0.5 * (self.env.action_space.high - self.env.action_space.low)
-                action = np.clip(action, self.env.action_space.low, self.env.action_space.high)
+                if random.random() < exploration_rate:
+                    action = self.env.action_space.sample()
+                else:
+                    with torch.no_grad():
+                        action = self.select_action(
+                            state
+                        )
+                        action = action.detach().cpu().numpy()
+                        
+                    action = self.env.action_space.low + (action + 1.0) * 0.5 * (self.env.action_space.high - self.env.action_space.low)
+                    action = np.clip(action, self.env.action_space.low, self.env.action_space.high)
+
+
+                exploration_rate = max(self.min_exploration, exploration_rate * self.epsilon_decay)
 
                 # Perform the action in the environment
                 next_state, reward, terminated, truncated, _ = self.env.step(action)
@@ -172,24 +212,22 @@ class DDPG():
         Args:
             memory_buffer (list): the memory buffer containing the states, actions, rewards, next states, and dones
         """
-        # Sample a batch of experiences
-        states, actions, rewards, next_states, dones = [], [], [], [], []
-        for ep in memory_buffer:
-            for state, action, reward, next_state, done in ep:
-                states.append(state)
-                actions.append(action)
-                rewards.append(reward)
-                next_states.append(next_state)
-                dones.append(done)
-        # Convert the lists to tensors
-        states = torch.tensor(states, dtype=torch.float32)
-        actions = torch.tensor(actions, dtype=torch.float32)
-        rewards = torch.tensor(rewards, dtype=torch.float32).unsqueeze(1)
-        next_states = torch.tensor(next_states, dtype=torch.float32)
-        dones = torch.tensor(dones, dtype=torch.float32).unsqueeze(1)
+        
+        if len(memory_buffer) < self.batch_size:
+            return
+
+            
+        batch = random.sample(memory_buffer, self.batch_size)
+        states, actions, rewards, next_states, dones = map(np.stack, zip(*batch))
+
+        states      = torch.FloatTensor(states)
+        actions     = torch.FloatTensor(actions)
+        next_states = torch.FloatTensor(next_states)
+        rewards     = torch.FloatTensor(rewards).unsqueeze(1)
+        dones       = torch.FloatTensor(np.float32(dones)).unsqueeze(1)
 
         # Update the critic model
-        new_actions = self.target_actor_net(next_states).detach()
+        new_actions = self.get_tanh_action(next_states, target=True).detach()
         target_critics = self.target_critic_net(torch.cat([next_states, new_actions], dim=1)).detach()
 
         target = rewards + self.gamma * (1 - dones) * target_critics
@@ -201,7 +239,7 @@ class DDPG():
         self.critic_net_optimizer.step()
 
         # Update the actor model
-        predicted_actions = self.actor_net(states)
+        predicted_actions = self.get_tanh_action(states)
         critic_value = self.critic_net(torch.cat([states, predicted_actions], dim=1))
         actor_loss = -torch.mean(critic_value)
 

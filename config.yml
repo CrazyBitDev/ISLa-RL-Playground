@@ -12,17 +12,18 @@ DRL_methods:
       hidden_layers_critic: 1                 # The number of hidden layers of the critic neural network
       nodes_hidden_layers_actor: 256           # The number of neurons in hidden layers of the neural network
       nodes_hidden_layers_critic: 256          # The number of neurons in hidden layers of the neural network
-      lr_actor_optimizer: 0.0003               # learning rate optimizer policy pi
+      lr_actor_optimizer: 0.0002               # learning rate optimizer policy pi
       lr_critic_optimizer: 0.0003              # learning rate optimizer critic function (Q function)
       tau: 0.005                              # polyak averaging in soft-update of parameters
       gamma: 0.99                             # Discount factor
-      epsilon: 0.000001
+      eps_decay: 0.9999
+      min_exploration: 0.01
       noise_std: 0.1
      
     gym_environment: LunarLander
     memory_size: 50_000                        # The size of the replay buffer
-    batch_size: 64                            # The number of samples to take from the replay buffer
-    tot_episodes: 5000                         # The number of episodes to run the agent
+    batch_size: 64                             # The number of samples to take from the replay buffer
+    tot_episodes: 1000                         # The number of episodes to run the agent
     seeds_to_test: [0,1,2]
 
   ## - name: SAC
