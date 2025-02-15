@@ -1,0 +1,47 @@
+use_wandb: True
+wandb_config:
+  project: RL-playground2
+  entity: matteoingusci01
+  tag: VR506254
+
+DRL_methods:
+
+  - name: SAC
+    parameters:
+      hidden_layers_actor: 1                  # The number of hidden layers of the actor neural network
+      hidden_layers_critic: 1                 # The number of hidden layers of the critic neural network
+      nodes_hidden_layers_actor: 256          # The number of neurons in hidden layers of the neural network
+      nodes_hidden_layers_critic: 256         # The number of neurons in hidden layers of the neural network
+      lr_actor_optimizer: 0.001               # learning rate optimizer policy pi
+      lr_critic_optimizer: 0.001              # learning rate optimizer critic function (Q function)
+      lr_temperature_optimizer: 0.001         # learning rate temperature (log entropy coefficient) 
+      tau: 0.005                              # polyak averaging in soft-update of parameters
+      gamma: 0.99                             # Discount factor
+      epsilon_decay: 0.9999                   # Decay factor for epsilon
+      min_epsilon: 0.01                       # Minimum value for epsilon
+      
+    gym_environment: LunarLander
+    memory_size: 100_000                      # The size of the replay buffer
+    batch_size: 32                            # The number of samples to take from the replay buffer
+    tot_episodes: 500                         # The number of episodes to run the agent
+    seeds_to_test: [0,1,2]
+    
+  - name: DDPG
+    parameters:
+      hidden_layers_actor: 1                  # The number of hidden layers of the actor neural network
+      hidden_layers_critic: 1                 # The number of hidden layers of the critic neural network
+      nodes_hidden_layers_actor: 256          # The number of neurons in hidden layers of the neural network
+      nodes_hidden_layers_critic: 256         # The number of neurons in hidden layers of the neural network
+      lr_actor_optimizer: 0.0002              # learning rate optimizer policy pi
+      lr_critic_optimizer: 0.0003             # learning rate optimizer critic function (Q function)
+      tau: 0.005                              # polyak averaging in soft-update of parameters
+      gamma: 0.99                             # Discount factor
+      epsilon_decay: 0.9999                   # Decay factor for epsilon
+      min_epsilon: 0.01                       # Minimum value for epsilon
+      noise_std: 0.1                          # Standard deviation of the noise added to the actions
+     
+    gym_environment: LunarLander
+    memory_size: 50_000                       # The size of the replay buffer
+    batch_size: 64                            # The number of samples to take from the replay buffer
+    tot_episodes: 1000                        # The number of episodes to run the agent
+    seeds_to_test: [0,1,2]
