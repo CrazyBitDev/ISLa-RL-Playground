@@ -18,7 +18,7 @@ BOLD = '\033[1m'
 UNDERLINE = '\033[4m'
 
 def check_parameters(method):
-    if method['name'] not in ['PPO', 'REINFORCE', 'DDPG', 'SAC', 'SACAlpha', 'MCTS', 'QLEARNING']: 
+    if method['name'] not in ['PPO', 'REINFORCE', 'DDPG', 'SAC', 'MCTS', 'QLEARNING']: 
         raise ValueError(f"{RED_COL}{method['name']} method is not supported! Select one of the following methods: ['PPO', 'DDPG', 'SAC', 'MCTS', 'QLEARNING'] in the yaml file.{RESET_COL}")
     
 
