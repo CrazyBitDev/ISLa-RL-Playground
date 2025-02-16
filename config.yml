@@ -1,6 +1,6 @@
 use_wandb: True
 wandb_config:
-  project: RL-playground2
+  project: RL-playground
   entity: matteoingusci01
   tag: VR506254
 
