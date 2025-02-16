@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import gymnasium
 from gymnasium.spaces import Discrete, Box
 import collections
-from utils.utils import TorchModel, init_wandb, env_success
+from utils.utils import TorchModel, init_wandb, env_success, reward_shaping
 import os
 os.sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), '../'))
 import wandb
@@ -21,7 +21,7 @@ class SAC:
             self.env = gymnasium.make(params['gym_environment'], render_mode=params['render_mode'], continuous=True)
         else:
             from utils.TB3.gym_utils.gym_unity_wrapper import UnitySafetyGym
-            self.env = UnitySafetyGym(editor_run=False, env_type="windows", worker_id=int(time.time())%10000, time_scale=100, no_graphics=True, max_step=100, action_space_type='discrete')
+            self.env = UnitySafetyGym(editor_run=False, env_type="windows", worker_id=int(time.time())%10000, time_scale=100, no_graphics=True, max_step=100, action_space_type='continuous')
         
         self.env_name = params['gym_environment']
 
@@ -164,17 +164,14 @@ class SAC:
                 epsilon = max(self.min_epsilon, epsilon * self.epsilon_decay)
 
                 # Perform the action in the environment
-                next_state, reward, terminated, truncated, _ = self.env.step(action)
+                next_state, reward, terminated, truncated, info = self.env.step(action)
                 done = terminated or truncated
+
+                step_data = [state, action, reward, next_state, done]
+                reward_shaping(self.env_name, step_data, terminated, truncated, info)
                 
                 # Store the data in the memory buffer
-                memory_buffer.append((
-                    state,
-                    action,
-                    reward,
-                    next_state,
-                    done
-                ))
+                memory_buffer.append(step_data)
                 
                 self.update_policy(memory_buffer)
                 
@@ -183,7 +180,7 @@ class SAC:
                 # Update the state to the next state
                 state = next_state
                 # Check if the environment is successful
-                success = env_success(self.env_name, ep_reward, terminated)
+                success = env_success(self.env_name, step_data, ep_reward, terminated, truncated, info)
 
                 # Exit condition for the episode
                 if done: break

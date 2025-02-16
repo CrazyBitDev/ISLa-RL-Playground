@@ -4,7 +4,7 @@ from torch import nn
 import torch.nn.functional as F
 import gymnasium
 import collections
-from utils.utils import TorchModel, init_wandb, env_success
+from utils.utils import TorchModel, init_wandb, env_success, reward_shaping
 import wandb
 import random
 import copy
@@ -79,7 +79,7 @@ class DDPG():
 
         self.noise_std = params['parameters']['noise_std']
 
-        self.epsilon_decay = params['parameters']['eps_decay']
+        self.epsilon_decay = params['parameters']['epsilon_decay']
         self.min_epsilon = params['parameters']['min_epsilon']
 
         self.total_episodes = params['tot_episodes']
@@ -179,17 +179,14 @@ class DDPG():
                 epsilon = max(self.min_epsilon, epsilon * self.epsilon_decay)
 
                 # Perform the action in the environment
-                next_state, reward, terminated, truncated, _ = self.env.step(action)
+                next_state, reward, terminated, truncated, info = self.env.step(action)
                 done = terminated or truncated
 
+                step_data = [state, action, reward, next_state, done]
+                reward_shaping(self.env_name, step_data, terminated, truncated, info)
+                
                 # Store the data in the memory buffer
-                memory_buffer.append((
-                    state,
-                    action,
-                    reward,
-                    next_state,
-                    done
-                ))
+                memory_buffer.append(step_data)
 
                 self.update_policy(memory_buffer)
 
@@ -198,7 +195,7 @@ class DDPG():
                 # Update the state to the next state
                 state = next_state
                 # Check if the environment is successful
-                success = env_success(self.env_name, ep_reward, terminated)
+                success = env_success(self.env_name, step_data, ep_reward, terminated, truncated, info)
 
                 # Exit condition for the episode
                 if done: break

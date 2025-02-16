@@ -104,9 +104,39 @@ def plot_results(results):
 	plt.savefig(f'results/{dict["env"]}/plot.pdf', format='pdf')
 
 
-def env_success(env_name, score, terminated):
+def env_success(env_name, step_data, ep_reward, terminated, truncated, info):
+	"""
+	Check if the environment is solved.
+
+	Args:
+		env_name: name of the environment
+		step_data: list with the data of the step
+		terminated: boolean that indicates if the episode is terminated
+		truncated: boolean that indicates if the episode is truncated
+		info: dictionary with the information of the environment step
+
+	step_data = [state, action, reward, next_state, done]
+	"""
 	if env_name == "LunarLander":
-		return score > 200
+		return ep_reward >= 200
 	elif env_name == "TB3":
 		return terminated
 	return False
+
+def reward_shaping(env_name, step_data, terminated, truncated, info):
+	"""
+	Execute the reward shaping for the environment.
+
+	Args:
+		env_name: name of the environment
+		step_data: list with the data of the step
+		terminated: boolean that indicates if the episode is terminated
+		truncated: boolean that indicates if the episode is truncated
+		info: dictionary with the information of the environment step
+
+	step_data = [state, action, reward, next_state, done]
+	"""
+	if env_name == "TB3":
+		if not step_data[4]: #done
+			step_data[2] = 10 * (step_data[0][-2] - step_data[3][-2]) - 0.01
+		
