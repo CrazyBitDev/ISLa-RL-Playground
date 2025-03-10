@@ -121,7 +121,8 @@ class DDPG():
         """
         state = torch.Tensor(state)
         actions = self.get_tanh_action(state)
-        noise = (self.noise_std ** 0.5) * torch.randn(self.action_dim)
+        #noise = (self.noise_std ** 0.5) * torch.randn(self.action_dim)
+        noise = np.random.normal(0, self.noise_std, self.action_dim)
         return actions + noise
         
 
@@ -173,7 +174,7 @@ class DDPG():
                         )
                         action = action.detach().cpu().numpy()
                         
-                    action = self.env.action_space.low + (action + 1.0) * 0.5 * (self.env.action_space.high - self.env.action_space.low)
+                    #action = self.env.action_space.low + (action + 1.0) * 0.5 * (self.env.action_space.high - self.env.action_space.low)
                     action = np.clip(action, self.env.action_space.low, self.env.action_space.high)
                 # Decay the epsilon value
                 epsilon = max(self.min_epsilon, epsilon * self.epsilon_decay)
