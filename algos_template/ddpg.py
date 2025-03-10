@@ -19,7 +19,7 @@ from typing import Union
 class DDPG():
     def __init__(self, params, use_wandb=False):
         if params['gym_environment'] != 'TB3':
-            self.env = gymnasium.make(params['gym_environment'], render_mode=params['render_mode'], continuous=True)
+            self.env = gymnasium.make(params['gym_environment'], render_mode=params['render_mode'])
         else:
             from utils.TB3.gym_utils.gym_unity_wrapper import UnitySafetyGym
             self.env = UnitySafetyGym(editor_run=False, env_type="windows", worker_id=int(time.time())%10000,

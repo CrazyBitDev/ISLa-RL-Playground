@@ -117,7 +117,7 @@ def env_success(env_name, step_data, ep_reward, terminated, truncated, info):
 
 	step_data = [state, action, reward, next_state, done]
 	"""
-	if env_name == "LunarLander":
+	if env_name == "LunarLander" or env_name == "LunarLanderContinuous":
 		return ep_reward >= 200
 	elif env_name == "TB3":
 		return terminated

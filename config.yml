@@ -20,7 +20,7 @@ DRL_methods:
       epsilon_decay: 0.9999                   # Decay factor for epsilon
       min_epsilon: 0.01                       # Minimum value for epsilon
       
-    gym_environment: LunarLander
+    gym_environment: LunarLanderContinuous
     memory_size: 100_000                      # The size of the replay buffer
     batch_size: 32                            # The number of samples to take from the replay buffer
     tot_episodes: 500                         # The number of episodes to run the agent
@@ -60,7 +60,7 @@ DRL_methods:
       min_epsilon: 0.01                       # Minimum value for epsilon
       noise_std: 0.1                          # Standard deviation of the noise added to the actions
      
-    gym_environment: LunarLander
+    gym_environment: LunarLanderContinuous
     memory_size: 50_000                       # The size of the replay buffer
     batch_size: 64                            # The number of samples to take from the replay buffer
     tot_episodes: 1000                        # The number of episodes to run the agent
